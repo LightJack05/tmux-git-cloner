@@ -104,7 +104,10 @@ load_config() {
         create_default_config
     fi
     
-    # Source the config file (only variable assignments)
+    # List of allowed configuration keys
+    local allowed_keys="CLONE_DIR CLONE_PROTOCOL REMOTES"
+    
+    # Source the config file (only allowed variable assignments)
     while IFS='=' read -r key value; do
         # Skip comments and empty lines
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
@@ -114,20 +117,41 @@ load_config() {
         key=$(echo "$key" | xargs)
         value=$(echo "$value" | xargs)
         
+        # Only process allowed configuration keys
+        if ! echo "$allowed_keys" | grep -qw "$key"; then
+            continue
+        fi
+        
         # Remove quotes from value
         value="${value#\"}"
         value="${value%\"}"
         value="${value#\'}"
         value="${value%\'}"
         
-        # Export the variable
-        export "$key=$value"
+        # Set the variable based on key
+        case "$key" in
+            CLONE_DIR)
+                CLONE_DIR="$value"
+                ;;
+            CLONE_PROTOCOL)
+                CLONE_PROTOCOL="$value"
+                ;;
+            REMOTES)
+                REMOTES="$value"
+                ;;
+        esac
     done < "$CONFIG_FILE"
     
     # Set defaults if not specified
     CLONE_DIR="${CLONE_DIR:-$HOME/repos}"
     CLONE_PROTOCOL="${CLONE_PROTOCOL:-ssh}"
     REMOTES="${REMOTES:-github:github.com}"
+    
+    # Validate CLONE_PROTOCOL
+    if [[ "$CLONE_PROTOCOL" != "ssh" && "$CLONE_PROTOCOL" != "https" ]]; then
+        log_warn "Invalid CLONE_PROTOCOL '$CLONE_PROTOCOL', defaulting to 'ssh'"
+        CLONE_PROTOCOL="ssh"
+    fi
     
     # Create clone directory if it doesn't exist
     mkdir -p "$CLONE_DIR"
