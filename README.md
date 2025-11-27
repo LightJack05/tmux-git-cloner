@@ -5,6 +5,7 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 ## Features
 
 - **Multiple Remote Support**: Configure multiple GitHub and Gitea instances
+- **CLI-Based Authentication**: Uses `gh` (GitHub CLI) and `tea` (Gitea CLI) for authentication - no separate token management required
 - **SSH and HTTPS Cloning**: Choose your preferred clone protocol
 - **Interactive Selection**: Use fzf with tmux integration to browse and select repositories
 - **Tmux Session Management**: Automatically creates a new tmux session for the clone process
@@ -12,30 +13,41 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 
 ## Prerequisites
 
-The following tools must be installed:
+### Required Tools
 
 - `bash` (4.0+)
 - `tmux`
 - `fzf`
 - `git`
-- `curl`
-- `jq`
+
+### Remote CLIs (at least one required)
+
+- `gh` - GitHub CLI (for GitHub and GitHub Enterprise)
+- `tea` - Gitea CLI (for Gitea instances)
 
 ### Installation on common systems
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install tmux fzf git curl jq
+sudo apt install tmux fzf git
+
+# GitHub CLI
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+
+# Gitea CLI (tea) - download from https://gitea.com/gitea/tea/releases
 ```
 
 **Arch Linux:**
 ```bash
-sudo pacman -S tmux fzf git curl jq
+sudo pacman -S tmux fzf git github-cli
+# tea available from AUR
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install tmux fzf git curl jq
+brew install tmux fzf git gh tea
 ```
 
 ## Installation
@@ -43,6 +55,27 @@ brew install tmux fzf git curl jq
 1. Clone this repository or download the `tmux-git-cloner` script
 2. Make it executable: `chmod +x tmux-git-cloner`
 3. Move it to a directory in your PATH, e.g., `mv tmux-git-cloner ~/.local/bin/`
+
+## Authentication
+
+This tool uses the authentication from `gh` and `tea` CLIs, so you don't need to manage tokens separately.
+
+### GitHub Authentication
+
+```bash
+# For github.com
+gh auth login
+
+# For GitHub Enterprise
+gh auth login --hostname github.mycompany.com
+```
+
+### Gitea Authentication
+
+```bash
+# Add a Gitea login
+tea login add --name myserver --url https://gitea.example.com --token YOUR_TOKEN
+```
 
 ## Configuration
 
@@ -56,67 +89,26 @@ CLONE_DIR="${HOME}/repos"
 
 # Clone protocol: ssh or https
 CLONE_PROTOCOL="ssh"
+
+# List of remotes to query (space-separated)
+# Format: type:host
+REMOTES="github:github.com"
 ```
 
-### Adding Remotes
+### Example Configurations
 
-#### GitHub
-
-```bash
-REMOTE_github_TYPE=github
-REMOTE_github_HOST=github.com
-REMOTE_github_USER=yourusername    # Optional: filter to specific user's repos
-REMOTE_github_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
-```
-
-To create a GitHub personal access token:
-1. Go to GitHub → Settings → Developer settings → Personal access tokens
-2. Generate a new token with `repo` scope (for private repos) or `public_repo` (for public only)
-
-#### GitHub Enterprise
-
-```bash
-REMOTE_github_enterprise_TYPE=github
-REMOTE_github_enterprise_HOST=github.mycompany.com
-REMOTE_github_enterprise_API_URL=https://github.mycompany.com/api/v3
-REMOTE_github_enterprise_TOKEN=your_token
-```
-
-#### Gitea
-
-```bash
-REMOTE_gitea_TYPE=gitea
-REMOTE_gitea_HOST=gitea.example.com
-REMOTE_gitea_API_URL=https://gitea.example.com/api/v1
-REMOTE_gitea_TOKEN=your_gitea_token
-```
-
-To create a Gitea token:
-1. Go to Gitea → Settings → Applications → Generate New Token
-2. Give it a name and appropriate permissions
-
-### Multiple Remotes Example
-
+**Single GitHub remote:**
 ```bash
 CLONE_DIR="${HOME}/code"
 CLONE_PROTOCOL="ssh"
+REMOTES="github:github.com"
+```
 
-# Personal GitHub
-REMOTE_github_TYPE=github
-REMOTE_github_HOST=github.com
-REMOTE_github_TOKEN=ghp_personal_token
-
-# Work GitHub Enterprise
-REMOTE_work_TYPE=github
-REMOTE_work_HOST=github.company.com
-REMOTE_work_API_URL=https://github.company.com/api/v3
-REMOTE_work_TOKEN=ghp_work_token
-
-# Personal Gitea
-REMOTE_gitea_TYPE=gitea
-REMOTE_gitea_HOST=git.mydomain.com
-REMOTE_gitea_API_URL=https://git.mydomain.com/api/v1
-REMOTE_gitea_TOKEN=gitea_token
+**Multiple remotes:**
+```bash
+CLONE_DIR="${HOME}/code"
+CLONE_PROTOCOL="ssh"
+REMOTES="github:github.com github:github.company.com gitea:git.mydomain.com"
 ```
 
 ## Usage
@@ -128,7 +120,7 @@ tmux-git-cloner
 ```
 
 This will:
-1. Fetch repositories from all configured remotes
+1. Fetch repositories from all configured remotes using `gh` and `tea` CLIs
 2. Present an fzf selection interface (in tmux popup if available)
 3. On selection, clone the repository to `CLONE_DIR/host/owner/repo`
 4. Create a new tmux session named after the repo and attach to it
@@ -211,15 +203,33 @@ alias tgc='tmux-git-cloner'
 
 ### "No repositories found"
 
-- Check that your tokens are valid and have the correct permissions
-- Verify the API URLs are correct for enterprise instances
-- Run with `--list` to see if repositories are being fetched
+- Check that you're authenticated to your remotes:
+  - GitHub: `gh auth status`
+  - Gitea: `tea login list`
+- Verify your REMOTES configuration matches the authenticated hosts
 
 ### Authentication errors
 
-- GitHub tokens should have `repo` or `public_repo` scope
-- Gitea tokens should have appropriate read permissions
-- Ensure tokens haven't expired
+**GitHub:**
+```bash
+# Check status
+gh auth status
+
+# Re-authenticate
+gh auth login
+
+# For GitHub Enterprise
+gh auth login --hostname github.company.com
+```
+
+**Gitea:**
+```bash
+# List logins
+tea login list
+
+# Add new login
+tea login add --url https://gitea.example.com
+```
 
 ### SSH clone failures
 
