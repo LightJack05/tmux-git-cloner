@@ -50,47 +50,12 @@ check_dependencies() {
     fi
 }
 
-# Create default config if it doesn't exist
-create_default_config() {
-    mkdir -p "$CONFIG_DIR"
-    
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        cat > "$CONFIG_FILE" << 'EOF'
-# tmux-git-cloner configuration file
-# 
-# CLONE_DIR: Directory where repositories will be cloned
-#
-# Remote configuration:
-# This tool uses gh (GitHub CLI) and tea (Gitea CLI) for authentication.
-# No tokens need to be configured here - use the respective CLI tools to authenticate:
-#   - GitHub: gh auth login
-#   - Gitea:  tea login add
-#
-# REMOTES: Space-separated list of remotes to query
-# Format: type:host:protocol
-# Protocol can be 'ssh' or 'https'
-# Examples:
-#   github:github.com:ssh
-#   github:github.mycompany.com:https  (GitHub Enterprise)
-#   gitea:gitea.example.com:ssh
-
-CLONE_DIR="${HOME}/repos"
-
-# List of remotes to query (space-separated)
-# Format: type:host:protocol
-REMOTES="github:github.com:https"
-
-# Example with multiple remotes:
-# REMOTES="github:github.com:ssh github:github.company.com:https gitea:git.mydomain.com:ssh"
-EOF
-        exit 0
-    fi
-}
-
 # Load configuration
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        create_default_config
+        echo "Error: Config file not found: $CONFIG_FILE" >&2
+        echo "Please create a config file. See config.example for reference." >&2
+        exit 1
     fi
     
     # Source the config file directly
@@ -105,7 +70,11 @@ load_config() {
     mkdir -p "$CLONE_DIR"
 }
 
-# Get the hostname for a gh remote (handles github.com specially)
+# Get the --hostname flag for gh CLI commands.
+# The gh CLI requires --hostname for GitHub Enterprise servers, but not for github.com.
+# Example:
+#   get_gh_host_flag "github.com"           -> "" (empty, no flag needed)
+#   get_gh_host_flag "github.mycompany.com" -> "--hostname github.mycompany.com"
 get_gh_host_flag() {
     local host="$1"
     if [[ "$host" == "github.com" ]]; then

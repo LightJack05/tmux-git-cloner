@@ -79,7 +79,14 @@ tea login add --name myserver --url https://gitea.example.com --token YOUR_TOKEN
 
 ## Configuration
 
-On first run, a default configuration file will be created at `~/.config/tmux-git-cloner/config`.
+Copy the example config file to your config directory:
+
+```bash
+mkdir -p ~/.config/tmux-git-cloner
+cp config.example ~/.config/tmux-git-cloner/config
+```
+
+Then edit the config file to customize your settings.
 
 ### Configuration Options
 
@@ -157,9 +164,9 @@ $CLONE_DIR/
 
 ## Tmux Integration
 
-The script automatically detects if it's running inside tmux:
+The script uses `fzf --tmux` for seamless integration:
 
-- **Inside tmux**: Uses `fzf-tmux` for popup/split selection and `switch-client` to change sessions
+- **Inside tmux**: Uses fzf's built-in tmux mode for popup selection and `switch-client` to change sessions
 - **Outside tmux**: Uses regular fzf and `attach-session` to enter tmux
 
 When cloning, a new tmux session is created that:
