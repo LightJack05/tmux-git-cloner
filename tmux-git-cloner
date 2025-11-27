@@ -1,3 +1,459 @@
 #!/usr/bin/bash
 set -o pipefail
 
+# tmux-git-cloner: Clone git repositories from configured remotes
+# using fzf for selection and tmux for the clone process
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-git-cloner"
+CONFIG_FILE="$CONFIG_DIR/config"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-git-cloner"
+
+# Default values
+CLONE_DIR="${HOME}/repos"
+CLONE_PROTOCOL="ssh"  # ssh or https
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+log_info() {
+    echo -e "${GREEN}$1${NC}" >&2
+}
+
+log_warn() {
+    echo -e "${YELLOW}Warning: $1${NC}" >&2
+}
+
+# Check for required dependencies
+check_dependencies() {
+    local missing=()
+    
+    for cmd in fzf git tmux curl jq; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required dependencies: ${missing[*]}"
+        log_error "Please install them before running this script."
+        exit 1
+    fi
+}
+
+# Create default config if it doesn't exist
+create_default_config() {
+    mkdir -p "$CONFIG_DIR"
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << 'EOF'
+# tmux-git-cloner configuration file
+# 
+# CLONE_DIR: Directory where repositories will be cloned
+# CLONE_PROTOCOL: Protocol to use for cloning (ssh or https)
+#
+# Remote configuration format:
+# REMOTE_<name>_TYPE=github|gitea
+# REMOTE_<name>_HOST=hostname (e.g., github.com or gitea.example.com)
+# REMOTE_<name>_USER=username (for GitHub) or empty for all accessible repos
+# REMOTE_<name>_TOKEN=personal_access_token
+# REMOTE_<name>_API_URL=api_url (optional, for Gitea or GitHub Enterprise)
+
+CLONE_DIR="${HOME}/repos"
+CLONE_PROTOCOL="ssh"
+
+# Example GitHub configuration:
+# REMOTE_github_TYPE=github
+# REMOTE_github_HOST=github.com
+# REMOTE_github_USER=yourusername
+# REMOTE_github_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+
+# Example Gitea configuration:
+# REMOTE_gitea_TYPE=gitea
+# REMOTE_gitea_HOST=gitea.example.com
+# REMOTE_gitea_API_URL=https://gitea.example.com/api/v1
+# REMOTE_gitea_TOKEN=your_gitea_token
+EOF
+        log_info "Created default config at $CONFIG_FILE"
+        log_info "Please edit the config file to add your remotes."
+        exit 0
+    fi
+}
+
+# Load configuration
+load_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        create_default_config
+    fi
+    
+    # Source the config file (only variable assignments)
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        
+        # Remove leading/trailing whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        
+        # Remove quotes from value
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+        
+        # Export the variable
+        export "$key=$value"
+    done < "$CONFIG_FILE"
+    
+    # Set defaults if not specified
+    CLONE_DIR="${CLONE_DIR:-$HOME/repos}"
+    CLONE_PROTOCOL="${CLONE_PROTOCOL:-ssh}"
+    
+    # Create clone directory if it doesn't exist
+    mkdir -p "$CLONE_DIR"
+}
+
+# Get list of remotes from config
+get_remotes() {
+    local remotes=()
+    
+    while IFS='=' read -r key value; do
+        if [[ "$key" =~ ^REMOTE_([^_]+)_TYPE$ ]]; then
+            remotes+=("${BASH_REMATCH[1]}")
+        fi
+    done < "$CONFIG_FILE"
+    
+    # Remove duplicates
+    printf '%s\n' "${remotes[@]}" | sort -u
+}
+
+# Fetch repositories from GitHub
+fetch_github_repos() {
+    local remote_name="$1"
+    local host_var="REMOTE_${remote_name}_HOST"
+    local user_var="REMOTE_${remote_name}_USER"
+    local token_var="REMOTE_${remote_name}_TOKEN"
+    local api_url_var="REMOTE_${remote_name}_API_URL"
+    
+    local host="${!host_var:-github.com}"
+    local user="${!user_var}"
+    local token="${!token_var}"
+    local api_url="${!api_url_var:-https://api.github.com}"
+    
+    if [[ -z "$token" ]]; then
+        log_warn "No token configured for GitHub remote '$remote_name', skipping..."
+        return
+    fi
+    
+    local repos=()
+    local page=1
+    local per_page=100
+    
+    while true; do
+        local endpoint
+        if [[ -n "$user" ]]; then
+            endpoint="$api_url/users/$user/repos?per_page=$per_page&page=$page"
+        else
+            endpoint="$api_url/user/repos?per_page=$per_page&page=$page&affiliation=owner,collaborator,organization_member"
+        fi
+        
+        local response
+        response=$(curl -s -H "Authorization: token $token" \
+                       -H "Accept: application/vnd.github.v3+json" \
+                       "$endpoint")
+        
+        if [[ $(echo "$response" | jq -r 'type') == "array" ]]; then
+            local count
+            count=$(echo "$response" | jq 'length')
+            
+            if [[ "$count" -eq 0 ]]; then
+                break
+            fi
+            
+            # Extract repo info: host/owner/name
+            while IFS= read -r repo; do
+                repos+=("$repo")
+            done < <(echo "$response" | jq -r --arg host "$host" '.[] | "\($host)/\(.full_name)"')
+            
+            if [[ "$count" -lt "$per_page" ]]; then
+                break
+            fi
+            
+            ((page++))
+        else
+            log_error "Failed to fetch repos from GitHub: $(echo "$response" | jq -r '.message // "Unknown error"')"
+            break
+        fi
+    done
+    
+    printf '%s\n' "${repos[@]}"
+}
+
+# Fetch repositories from Gitea
+fetch_gitea_repos() {
+    local remote_name="$1"
+    local host_var="REMOTE_${remote_name}_HOST"
+    local token_var="REMOTE_${remote_name}_TOKEN"
+    local api_url_var="REMOTE_${remote_name}_API_URL"
+    
+    local host="${!host_var}"
+    local token="${!token_var}"
+    local api_url="${!api_url_var}"
+    
+    if [[ -z "$host" ]]; then
+        log_warn "No host configured for Gitea remote '$remote_name', skipping..."
+        return
+    fi
+    
+    if [[ -z "$api_url" ]]; then
+        api_url="https://$host/api/v1"
+    fi
+    
+    if [[ -z "$token" ]]; then
+        log_warn "No token configured for Gitea remote '$remote_name', skipping..."
+        return
+    fi
+    
+    local repos=()
+    local page=1
+    local limit=50
+    
+    while true; do
+        local endpoint="$api_url/user/repos?page=$page&limit=$limit"
+        
+        local response
+        response=$(curl -s -H "Authorization: token $token" \
+                       -H "Accept: application/json" \
+                       "$endpoint")
+        
+        if [[ $(echo "$response" | jq -r 'type') == "array" ]]; then
+            local count
+            count=$(echo "$response" | jq 'length')
+            
+            if [[ "$count" -eq 0 ]]; then
+                break
+            fi
+            
+            # Extract repo info: host/owner/name
+            while IFS= read -r repo; do
+                repos+=("$repo")
+            done < <(echo "$response" | jq -r --arg host "$host" '.[] | "\($host)/\(.full_name)"')
+            
+            if [[ "$count" -lt "$limit" ]]; then
+                break
+            fi
+            
+            ((page++))
+        else
+            log_error "Failed to fetch repos from Gitea: $(echo "$response" | jq -r '.message // "Unknown error"')"
+            break
+        fi
+    done
+    
+    printf '%s\n' "${repos[@]}"
+}
+
+# Fetch all repositories from all configured remotes
+fetch_all_repos() {
+    local all_repos=()
+    
+    while IFS= read -r remote; do
+        [[ -z "$remote" ]] && continue
+        
+        local type_var="REMOTE_${remote}_TYPE"
+        local remote_type="${!type_var}"
+        
+        case "$remote_type" in
+            github)
+                while IFS= read -r repo; do
+                    [[ -n "$repo" ]] && all_repos+=("$repo")
+                done < <(fetch_github_repos "$remote")
+                ;;
+            gitea)
+                while IFS= read -r repo; do
+                    [[ -n "$repo" ]] && all_repos+=("$repo")
+                done < <(fetch_gitea_repos "$remote")
+                ;;
+            *)
+                log_warn "Unknown remote type '$remote_type' for remote '$remote'"
+                ;;
+        esac
+    done < <(get_remotes)
+    
+    printf '%s\n' "${all_repos[@]}" | sort -u
+}
+
+# Generate clone URL for a repository
+get_clone_url() {
+    local repo_path="$1"
+    local host
+    local owner_repo
+    
+    host=$(echo "$repo_path" | cut -d'/' -f1)
+    owner_repo=$(echo "$repo_path" | cut -d'/' -f2-)
+    
+    if [[ "$CLONE_PROTOCOL" == "ssh" ]]; then
+        echo "git@${host}:${owner_repo}.git"
+    else
+        echo "https://${host}/${owner_repo}.git"
+    fi
+}
+
+# Clone repository and create tmux session
+clone_and_create_session() {
+    local repo_path="$1"
+    local clone_url
+    local target_dir
+    local session_name
+    
+    clone_url=$(get_clone_url "$repo_path")
+    
+    # Create target directory path: CLONE_DIR/host/owner/repo
+    target_dir="$CLONE_DIR/$repo_path"
+    
+    # Generate session name from repo (replace invalid chars)
+    session_name=$(echo "$repo_path" | tr '/' '_' | tr '.' '_')
+    
+    # Check if directory already exists
+    if [[ -d "$target_dir" ]]; then
+        log_info "Repository already exists at $target_dir"
+        log_info "Creating tmux session..."
+        
+        if tmux has-session -t "$session_name" 2>/dev/null; then
+            tmux switch-client -t "$session_name" 2>/dev/null || tmux attach-session -t "$session_name"
+        else
+            tmux new-session -d -s "$session_name" -c "$target_dir"
+            tmux switch-client -t "$session_name" 2>/dev/null || tmux attach-session -t "$session_name"
+        fi
+        return
+    fi
+    
+    # Create parent directory
+    mkdir -p "$(dirname "$target_dir")"
+    
+    # Create tmux session and clone in it
+    log_info "Cloning $repo_path..."
+    log_info "URL: $clone_url"
+    log_info "Target: $target_dir"
+    
+    # Create new tmux session
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        tmux kill-session -t "$session_name"
+    fi
+    
+    # Create session with clone command, then cd into it and start shell
+    tmux new-session -d -s "$session_name" -c "$(dirname "$target_dir")" \
+        "echo 'Cloning $repo_path...'; git clone '$clone_url' '$target_dir' && cd '$target_dir' && echo 'Clone complete! Press Enter to continue...' && read && exec \$SHELL"
+    
+    # Switch to or attach to the session
+    if [[ -n "$TMUX" ]]; then
+        tmux switch-client -t "$session_name"
+    else
+        tmux attach-session -t "$session_name"
+    fi
+}
+
+# Main function
+main() {
+    check_dependencies
+    load_config
+    
+    log_info "Fetching repositories from configured remotes..."
+    
+    # Fetch all repos
+    local repos
+    repos=$(fetch_all_repos)
+    
+    if [[ -z "$repos" ]]; then
+        log_error "No repositories found. Please check your configuration at $CONFIG_FILE"
+        exit 1
+    fi
+    
+    # Use fzf to select a repository
+    local selected
+    if [[ -n "$TMUX" ]]; then
+        # Use tmux popup mode if available (tmux 3.2+)
+        if tmux display-message -p '#{version}' | grep -qE '^3\.[2-9]|^[4-9]'; then
+            selected=$(echo "$repos" | fzf-tmux -p 80%,60% --prompt="Select repository: " --preview="echo 'Clone URL:'; echo '  SSH: git@{1}:{2}/{3}.git' | sed 's|{1}/{2}/{3}|{}|g' | sed 's|{1}|$(echo {} | cut -d/ -f1)|g;s|{2}/{3}|$(echo {} | cut -d/ -f2-)|g'" --preview-window=down:3:wrap)
+        else
+            selected=$(echo "$repos" | fzf-tmux --prompt="Select repository: ")
+        fi
+    else
+        selected=$(echo "$repos" | fzf --prompt="Select repository: ")
+    fi
+    
+    if [[ -z "$selected" ]]; then
+        log_info "No repository selected. Exiting."
+        exit 0
+    fi
+    
+    clone_and_create_session "$selected"
+}
+
+# Show help
+show_help() {
+    cat << EOF
+tmux-git-cloner - Clone git repositories from configured remotes
+
+Usage: tmux-git-cloner [OPTIONS]
+
+Options:
+    -h, --help      Show this help message
+    -c, --config    Open configuration file in editor
+    -l, --list      List all available repositories without cloning
+    -r, --refresh   Force refresh repository cache
+
+Configuration:
+    Config file: $CONFIG_FILE
+    
+    The config file allows you to configure:
+    - CLONE_DIR: Directory where repositories will be cloned
+    - CLONE_PROTOCOL: Protocol to use (ssh or https)
+    - Multiple GitHub and Gitea remotes with their tokens
+
+Examples:
+    tmux-git-cloner              # Interactive repository selection
+    tmux-git-cloner --list       # List all repositories
+    tmux-git-cloner --config     # Edit configuration
+
+EOF
+}
+
+# Parse command line arguments
+case "${1:-}" in
+    -h|--help)
+        show_help
+        exit 0
+        ;;
+    -c|--config)
+        create_default_config
+        "${EDITOR:-vim}" "$CONFIG_FILE"
+        exit 0
+        ;;
+    -l|--list)
+        check_dependencies
+        load_config
+        fetch_all_repos
+        exit 0
+        ;;
+    -r|--refresh)
+        # For future use with caching
+        rm -rf "$CACHE_DIR"
+        main
+        ;;
+    "")
+        main
+        ;;
+    *)
+        log_error "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+esac
