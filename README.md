@@ -2,6 +2,11 @@
 
 A tool that allows you to clone git repositories from multiple remotes (GitHub, Gitea) using fzf for interactive selection within tmux.
 
+> [!CAUTION]
+> THIS TOOL IS AI GENERATED
+> While I have tested it, read through the code and am using it myself, I do not guarantee anything about this tool. 
+> It seems to work quite well and appears like it is somewhat stable, but if it blows up, it blows up.
+
 ## Features
 
 - **Multiple Remote Support**: Configure multiple GitHub and Gitea instances
