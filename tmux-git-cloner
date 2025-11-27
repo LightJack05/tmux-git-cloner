@@ -140,10 +140,61 @@ fetch_gitea_repos() {
         done
 }
 
-# Fetch all repositories from all configured remotes
-# Stores protocol info in REMOTE_PROTOCOLS associative array
-# Stores repos in ALL_REPOS array (global, to avoid subshell issues with REMOTE_PROTOCOLS)
+# Associative array to store protocol info
 declare -A REMOTE_PROTOCOLS
+
+# Stream repositories from all configured remotes directly to stdout
+# This allows piping directly to fzf for immediate display
+# Also writes protocol info to a temp file for later use
+stream_all_repos() {
+    local protocol_file="$1"
+    local -A written_hosts  # Track which hosts we've already written
+    
+    for remote in $REMOTES; do
+        local type host protocol
+        # Parse format: type:host:protocol
+        type="${remote%%:*}"
+        local rest="${remote#*:}"
+        host="${rest%%:*}"
+        protocol="${rest#*:}"
+        
+        # Default protocol to ssh if not specified
+        if [[ "$protocol" == "$host" ]]; then
+            protocol="ssh"
+        fi
+        
+        if [[ -z "$type" || -z "$host" ]]; then
+            continue
+        fi
+        
+        # Write protocol to temp file for later use (only once per host)
+        if [[ -z "${written_hosts[$host]}" ]]; then
+            printf '%s\t%s\n' "$host" "$protocol" >> "$protocol_file"
+            written_hosts["$host"]=1
+        fi
+        
+        case "$type" in
+            github)
+                fetch_github_repos "$host"
+                ;;
+            gitea)
+                fetch_gitea_repos "$host"
+                ;;
+        esac
+    done
+}
+
+# Load protocol info from temp file into REMOTE_PROTOCOLS array
+load_protocols_from_file() {
+    local protocol_file="$1"
+    if [[ -f "$protocol_file" ]]; then
+        while IFS=$'\t' read -r host protocol; do
+            [[ -n "$host" ]] && REMOTE_PROTOCOLS["$host"]="$protocol"
+        done < "$protocol_file"
+    fi
+}
+
+# Legacy function for --list mode (populates ALL_REPOS array)
 declare -a ALL_REPOS
 
 fetch_all_repos() {
@@ -249,20 +300,24 @@ main() {
     load_config
     check_dependencies
     
-    # Fetch all repos (populates ALL_REPOS array and REMOTE_PROTOCOLS)
-    fetch_all_repos
+    # Create temp file to store protocol info (needed for clone URL generation)
+    local protocol_file
+    protocol_file=$(mktemp)
+    # shellcheck disable=SC2064
+    trap "rm -f '$protocol_file'" EXIT
     
-    # Convert array to newline-separated string for fzf, sorted
-    local repos
-    repos=$(printf '%s\n' "${ALL_REPOS[@]}" | sort -u)
-    
-    # Use fzf to select a repository (--print-query allows entering custom URLs)
+    # Stream repos directly to fzf for immediate display
+    # Use awk to deduplicate on-the-fly without buffering
+    # fzf handles sorting during interactive search
     local selected
-    selected=$(echo "$repos" | fzf --tmux=center,100% --prompt="Select repo to clone: " --print-query | tail -1)
+    selected=$(stream_all_repos "$protocol_file" | awk '!seen[$0]++' | fzf --tmux=center,100% --prompt="Select repo to clone: " --print-query | tail -1)
     
     if [[ -z "$selected" ]]; then
         exit 0
     fi
+    
+    # Load protocol info from temp file
+    load_protocols_from_file "$protocol_file"
     
     # Handle full URLs (https:// or git@)
     if [[ "$selected" =~ ^https://([^/]+)/(.+)(\.git)?$ ]]; then
