@@ -90,7 +90,7 @@ CLONE_DIR="${HOME}/repos"
 # List of remotes to query (space-separated)
 # Format: type:host:protocol
 # Protocol can be 'ssh' or 'https'
-REMOTES="github:github.com:ssh"
+REMOTES="github:github.com:https"
 ```
 
 ### Example Configurations
@@ -98,13 +98,13 @@ REMOTES="github:github.com:ssh"
 **Single GitHub remote:**
 ```bash
 CLONE_DIR="${HOME}/code"
-REMOTES="github:github.com:ssh"
+REMOTES="github:github.com:https"
 ```
 
 **Multiple remotes with different protocols:**
 ```bash
 CLONE_DIR="${HOME}/code"
-REMOTES="github:github.com:ssh github:github.company.com:https gitea:git.mydomain.com:ssh"
+REMOTES="github:github.com:https github:github.company.com:https gitea:git.mydomain.com:ssh"
 ```
 
 ## Usage

@@ -12,7 +12,7 @@ CONFIG_FILE="$CONFIG_DIR/config"
 # Default values
 CLONE_DIR="${HOME}/repos"
 
-# Check for required dependencies
+# Check for required dependencies based on configured remotes
 check_dependencies() {
     local missing=()
     
@@ -27,9 +27,25 @@ check_dependencies() {
         exit 1
     fi
     
-    # Check for at least one remote CLI
-    if ! command -v gh &> /dev/null && ! command -v tea &> /dev/null; then
-        echo "Error: At least one of 'gh' (GitHub CLI) or 'tea' (Gitea CLI) must be installed." >&2
+    # Check for CLI tools based on configured remotes
+    local needs_gh=false
+    local needs_tea=false
+    
+    for remote in $REMOTES; do
+        local type="${remote%%:*}"
+        case "$type" in
+            github) needs_gh=true ;;
+            gitea) needs_tea=true ;;
+        esac
+    done
+    
+    if [[ "$needs_gh" == true ]] && ! command -v gh &> /dev/null; then
+        echo "Error: 'gh' (GitHub CLI) is required for configured GitHub remotes." >&2
+        exit 1
+    fi
+    
+    if [[ "$needs_tea" == true ]] && ! command -v tea &> /dev/null; then
+        echo "Error: 'tea' (Gitea CLI) is required for configured Gitea remotes." >&2
         exit 1
     fi
 }
@@ -62,7 +78,7 @@ CLONE_DIR="${HOME}/repos"
 
 # List of remotes to query (space-separated)
 # Format: type:host:protocol
-REMOTES="github:github.com:ssh"
+REMOTES="github:github.com:https"
 
 # Example with multiple remotes:
 # REMOTES="github:github.com:ssh github:github.company.com:https gitea:git.mydomain.com:ssh"
@@ -83,7 +99,7 @@ load_config() {
     
     # Set defaults if not specified
     CLONE_DIR="${CLONE_DIR:-$HOME/repos}"
-    REMOTES="${REMOTES:-github:github.com:ssh}"
+    REMOTES="${REMOTES:-github:github.com:https}"
     
     # Create clone directory if it doesn't exist
     mkdir -p "$CLONE_DIR"
@@ -102,10 +118,6 @@ get_gh_host_flag() {
 # Fetch repositories from GitHub using gh CLI
 fetch_github_repos() {
     local host="$1"
-    
-    if ! command -v gh &> /dev/null; then
-        return
-    fi
     
     # Check if authenticated
     local host_flag
@@ -127,10 +139,6 @@ fetch_github_repos() {
 # Fetch repositories from Gitea using tea CLI
 fetch_gitea_repos() {
     local host="$1"
-    
-    if ! command -v tea &> /dev/null; then
-        return
-    fi
     
     # Check if login exists for this host
     if ! tea login list 2>/dev/null | grep -q "$host"; then
@@ -215,8 +223,8 @@ clone_and_create_session() {
     # Create target directory path: CLONE_DIR/host/owner/repo
     target_dir="$CLONE_DIR/$repo_path"
     
-    # Use repo path as session name (/ is allowed in tmux session names)
-    session_name="$repo_path"
+    # Session name: path relative to home, with leading slash removed and periods replaced with underscores
+    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g")
     
     # Check if directory already exists
     if [[ -d "$target_dir" ]]; then
@@ -251,36 +259,34 @@ clone_and_create_session() {
 
 # Main function
 main() {
-    check_dependencies
     load_config
+    check_dependencies
     
     # Fetch all repos
     local repos
     repos=$(fetch_all_repos)
     
-    if [[ -z "$repos" ]]; then
-        echo "Error: No repositories found." >&2
-        exit 1
-    fi
-    
-    # Use fzf to select a repository
+    # Use fzf to select a repository (--print-query allows entering custom URLs)
     local selected
-    if [[ -n "$TMUX" ]]; then
-        # Use tmux popup mode if available (tmux 3.2+)
-        if tmux display-message -p '#{version}' | grep -qE '^3\.[2-9]|^[4-9]'; then
-            # shellcheck disable=SC2016
-            selected=$(echo "$repos" | fzf-tmux -p 80%,60% --prompt="Select repository: " \
-                --preview='host=$(echo {} | cut -d/ -f1); path=$(echo {} | cut -d/ -f2-); echo "Clone URLs:"; echo "  SSH:   git@${host}:${path}.git"; echo "  HTTPS: https://${host}/${path}.git"' \
-                --preview-window=down:4:wrap)
-        else
-            selected=$(echo "$repos" | fzf-tmux --prompt="Select repository: ")
-        fi
-    else
-        selected=$(echo "$repos" | fzf --prompt="Select repository: ")
-    fi
+    selected=$(echo "$repos" | fzf --tmux --prompt="Select repository (or paste URL): " --print-query | tail -1)
     
     if [[ -z "$selected" ]]; then
         exit 0
+    fi
+    
+    # Handle full URLs (https:// or git@)
+    if [[ "$selected" =~ ^https://([^/]+)/(.+)(\.git)?$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local repo_path="${BASH_REMATCH[2]}"
+        repo_path="${repo_path%.git}"
+        selected="$host/$repo_path"
+        REMOTE_PROTOCOLS["$host"]="https"
+    elif [[ "$selected" =~ ^git@([^:]+):(.+)(\.git)?$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local repo_path="${BASH_REMATCH[2]}"
+        repo_path="${repo_path%.git}"
+        selected="$host/$repo_path"
+        REMOTE_PROTOCOLS["$host"]="ssh"
     fi
     
     clone_and_create_session "$selected"
@@ -326,8 +332,8 @@ case "${1:-}" in
         exit 0
         ;;
     -l|--list)
-        check_dependencies
         load_config
+        check_dependencies
         fetch_all_repos
         exit 0
         ;;
