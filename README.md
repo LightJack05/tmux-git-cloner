@@ -6,7 +6,7 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 
 - **Multiple Remote Support**: Configure multiple GitHub and Gitea instances
 - **CLI-Based Authentication**: Uses `gh` (GitHub CLI) and `tea` (Gitea CLI) for authentication - no separate token management required
-- **SSH and HTTPS Cloning**: Choose your preferred clone protocol
+- **SSH and HTTPS Cloning**: Choose your preferred clone protocol per remote
 - **Interactive Selection**: Use fzf with tmux integration to browse and select repositories
 - **Tmux Session Management**: Automatically creates a new tmux session for the clone process
 - **Organized Storage**: Repositories are cloned into a structured directory (host/owner/repo)
@@ -87,12 +87,10 @@ On first run, a default configuration file will be created at `~/.config/tmux-gi
 # Directory where repositories will be cloned
 CLONE_DIR="${HOME}/repos"
 
-# Clone protocol: ssh or https
-CLONE_PROTOCOL="ssh"
-
 # List of remotes to query (space-separated)
-# Format: type:host
-REMOTES="github:github.com"
+# Format: type:host:protocol
+# Protocol can be 'ssh' or 'https'
+REMOTES="github:github.com:ssh"
 ```
 
 ### Example Configurations
@@ -100,15 +98,13 @@ REMOTES="github:github.com"
 **Single GitHub remote:**
 ```bash
 CLONE_DIR="${HOME}/code"
-CLONE_PROTOCOL="ssh"
-REMOTES="github:github.com"
+REMOTES="github:github.com:ssh"
 ```
 
-**Multiple remotes:**
+**Multiple remotes with different protocols:**
 ```bash
 CLONE_DIR="${HOME}/code"
-CLONE_PROTOCOL="ssh"
-REMOTES="github:github.com github:github.company.com gitea:git.mydomain.com"
+REMOTES="github:github.com:ssh github:github.company.com:https gitea:git.mydomain.com:ssh"
 ```
 
 ## Usage
@@ -132,14 +128,6 @@ tmux-git-cloner --list
 ```
 
 Lists all available repositories without cloning.
-
-### Edit Configuration
-
-```bash
-tmux-git-cloner --config
-```
-
-Opens the configuration file in your default editor.
 
 ### Help
 
@@ -175,9 +163,9 @@ The script automatically detects if it's running inside tmux:
 - **Outside tmux**: Uses regular fzf and `attach-session` to enter tmux
 
 When cloning, a new tmux session is created that:
-1. Shows the clone progress
+1. Runs git clone
 2. Automatically changes to the cloned directory
-3. Drops you into a shell when complete
+3. Drops you into a shell
 
 ## Tips
 
