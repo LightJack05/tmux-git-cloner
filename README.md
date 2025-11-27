@@ -10,6 +10,7 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 ## Features
 
 - **Multiple Remote Support**: Configure multiple GitHub and Gitea instances
+- **GitHub Organization Support**: Automatically lists repositories from GitHub organizations you are a member of
 - **CLI-Based Authentication**: Uses `gh` (GitHub CLI) and `tea` (Gitea CLI) for authentication - no separate token management required
 - **SSH and HTTPS Cloning**: Choose your preferred clone protocol per remote
 - **Interactive Selection**: Use fzf with tmux integration to browse and select repositories

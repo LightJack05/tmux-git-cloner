@@ -97,12 +97,32 @@ fetch_github_repos() {
         return
     fi
     
-    # Fetch repos using gh CLI
+    # Fetch user's personal repos using gh CLI
     # shellcheck disable=SC2086
     gh repo list --limit 1000 --json nameWithOwner --jq '.[].nameWithOwner' $host_flag 2>/dev/null | \
         while IFS= read -r repo; do
             echo "$host/$repo"
         done
+    
+    # Fetch repos from organizations the user is a member of
+    local hostname_flag=""
+    if [[ "$host" != "github.com" ]]; then
+        hostname_flag="--hostname $host"
+    fi
+    
+    # Get list of organizations
+    local orgs
+    # shellcheck disable=SC2086
+    orgs=$(gh api /user/orgs --jq '.[].login' $hostname_flag 2>/dev/null)
+    
+    # Fetch repos for each organization
+    for org in $orgs; do
+        # shellcheck disable=SC2086
+        gh repo list "$org" --limit 1000 --json nameWithOwner --jq '.[].nameWithOwner' $host_flag 2>/dev/null | \
+            while IFS= read -r repo; do
+                echo "$host/$repo"
+            done
+    done
 }
 
 # Fetch repositories from Gitea using tea CLI
