@@ -1,3 +1,321 @@
 #!/usr/bin/bash
 set -o pipefail
 
+# tmux-git-cloner: Clone git repositories from configured remotes
+# using fzf for selection and tmux for the clone process
+#
+# Uses gh CLI for GitHub and tea CLI for Gitea - no separate credential management needed
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-git-cloner"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+# Default values
+CLONE_DIR="${HOME}/repos"
+
+# Check for required dependencies based on configured remotes
+check_dependencies() {
+    local missing=()
+    
+    for cmd in fzf git tmux; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "Error: Missing required dependencies: ${missing[*]}" >&2
+        exit 1
+    fi
+    
+    # Check for CLI tools based on configured remotes
+    local needs_gh=false
+    local needs_tea=false
+    
+    for remote in $REMOTES; do
+        local type="${remote%%:*}"
+        case "$type" in
+            github) needs_gh=true ;;
+            gitea) needs_tea=true ;;
+        esac
+    done
+    
+    if [[ "$needs_gh" == true ]] && ! command -v gh &> /dev/null; then
+        echo "Error: 'gh' (GitHub CLI) is required for configured GitHub remotes." >&2
+        exit 1
+    fi
+    
+    if [[ "$needs_tea" == true ]] && ! command -v tea &> /dev/null; then
+        echo "Error: 'tea' (Gitea CLI) is required for configured Gitea remotes." >&2
+        exit 1
+    fi
+}
+
+# Load configuration
+load_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "Error: Config file not found: $CONFIG_FILE" >&2
+        echo "Please create a config file. See config.example for reference." >&2
+        exit 1
+    fi
+    
+    # Source the config file directly
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    
+    # Set defaults if not specified
+    CLONE_DIR="${CLONE_DIR:-$HOME/repos}"
+    REMOTES="${REMOTES:-github:github.com:https}"
+    
+    # Create clone directory if it doesn't exist
+    mkdir -p "$CLONE_DIR"
+}
+
+# Get the --hostname flag for gh CLI commands.
+# The gh CLI requires --hostname for GitHub Enterprise servers, but not for github.com.
+# Example:
+#   get_gh_host_flag "github.com"           -> "" (empty, no flag needed)
+#   get_gh_host_flag "github.mycompany.com" -> "--hostname github.mycompany.com"
+get_gh_host_flag() {
+    local host="$1"
+    if [[ "$host" == "github.com" ]]; then
+        echo ""
+    else
+        echo "--hostname $host"
+    fi
+}
+
+# Fetch repositories from GitHub using gh CLI
+fetch_github_repos() {
+    local host="$1"
+    
+    # Check if authenticated
+    local host_flag
+    host_flag=$(get_gh_host_flag "$host")
+    
+    # shellcheck disable=SC2086
+    if ! gh auth status $host_flag &> /dev/null; then
+        return
+    fi
+    
+    # Fetch repos using gh CLI
+    # shellcheck disable=SC2086
+    gh repo list --limit 1000 --json nameWithOwner --jq '.[].nameWithOwner' $host_flag 2>/dev/null | \
+        while IFS= read -r repo; do
+            echo "$host/$repo"
+        done
+}
+
+# Fetch repositories from Gitea using tea CLI
+fetch_gitea_repos() {
+    local host="$1"
+    
+    # Check if login exists for this host
+    if ! tea login list 2>/dev/null | grep -q "$host"; then
+        return
+    fi
+    
+    # Fetch repos using tea CLI
+    tea repos list --login "$host" --output simple 2>/dev/null | cut -d ' ' -f1-2 | tr ' ' '/' | \
+        while IFS= read -r repo; do
+            # tea outputs "owner/repo" format
+            [[ -n "$repo" ]] && echo "$host/$repo"
+        done
+}
+
+# Fetch all repositories from all configured remotes
+# Stores protocol info in REMOTE_PROTOCOLS associative array
+# Stores repos in ALL_REPOS array (global, to avoid subshell issues with REMOTE_PROTOCOLS)
+declare -A REMOTE_PROTOCOLS
+declare -a ALL_REPOS
+
+fetch_all_repos() {
+    ALL_REPOS=()
+    
+    for remote in $REMOTES; do
+        local type host protocol
+        # Parse format: type:host:protocol
+        type="${remote%%:*}"
+        local rest="${remote#*:}"
+        host="${rest%%:*}"
+        protocol="${rest#*:}"
+        
+        # Default protocol to ssh if not specified
+        if [[ "$protocol" == "$host" ]]; then
+            protocol="ssh"
+        fi
+        
+        if [[ -z "$type" || -z "$host" ]]; then
+            continue
+        fi
+        
+        # Store protocol for this host
+        REMOTE_PROTOCOLS["$host"]="$protocol"
+        
+        case "$type" in
+            github)
+                while IFS= read -r repo; do
+                    [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
+                done < <(fetch_github_repos "$host")
+                ;;
+            gitea)
+                while IFS= read -r repo; do
+                    [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
+                done < <(fetch_gitea_repos "$host")
+                ;;
+        esac
+    done
+}
+
+# Generate clone URL for a repository
+get_clone_url() {
+    local repo_path="$1"
+    local host owner_repo protocol
+    
+    host=$(echo "$repo_path" | cut -d'/' -f1)
+    owner_repo=$(echo "$repo_path" | cut -d'/' -f2-)
+    protocol="${REMOTE_PROTOCOLS[$host]:-ssh}"
+    
+    if [[ "$protocol" == "ssh" ]]; then
+        echo "git@${host}:${owner_repo}.git"
+    else
+        echo "https://${host}/${owner_repo}.git"
+    fi
+}
+
+# Clone repository and create tmux session
+clone_and_create_session() {
+    local repo_path="$1"
+    local clone_url target_dir session_name
+    
+    clone_url=$(get_clone_url "$repo_path")
+    
+    # Create target directory path: CLONE_DIR/host/owner/repo
+    target_dir="$CLONE_DIR/$repo_path"
+    
+    # Session name: path relative to home, with leading slash removed and periods replaced with underscores
+    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g")
+    
+    # Check if directory already exists
+    if [[ -d "$target_dir" ]]; then
+        if tmux has-session -t "$session_name" 2>/dev/null; then
+            tmux switch-client -t "$session_name" 2>/dev/null || tmux attach-session -t "$session_name"
+        else
+            tmux new-session -d -s "$session_name" -c "$target_dir"
+            tmux switch-client -t "$session_name" 2>/dev/null || tmux attach-session -t "$session_name"
+        fi
+        return
+    fi
+    
+    # Create parent directory
+    mkdir -p "$(dirname "$target_dir")"
+    
+    # Create new tmux session
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        tmux kill-session -t "$session_name"
+    fi
+    
+    # Create session, run git clone, then drop into shell
+    tmux new-session -d -s "$session_name" -c "$(dirname "$target_dir")" \
+        "git clone '$clone_url' '$target_dir'; cd '$target_dir'; exec \$SHELL"
+    
+    # Switch to or attach to the session
+    if [[ -n "$TMUX" ]]; then
+        tmux switch-client -t "$session_name"
+    else
+        tmux attach-session -t "$session_name"
+    fi
+}
+
+# Main function
+main() {
+    load_config
+    check_dependencies
+    
+    # Fetch all repos (populates ALL_REPOS array and REMOTE_PROTOCOLS)
+    fetch_all_repos
+    
+    # Convert array to newline-separated string for fzf, sorted
+    local repos
+    repos=$(printf '%s\n' "${ALL_REPOS[@]}" | sort -u)
+    
+    # Use fzf to select a repository (--print-query allows entering custom URLs)
+    local selected
+    selected=$(echo "$repos" | fzf --tmux --prompt="Select repository (or paste URL): " --print-query | tail -1)
+    
+    if [[ -z "$selected" ]]; then
+        exit 0
+    fi
+    
+    # Handle full URLs (https:// or git@)
+    if [[ "$selected" =~ ^https://([^/]+)/(.+)(\.git)?$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local repo_path="${BASH_REMATCH[2]}"
+        repo_path="${repo_path%.git}"
+        selected="$host/$repo_path"
+        REMOTE_PROTOCOLS["$host"]="https"
+    elif [[ "$selected" =~ ^git@([^:]+):(.+)(\.git)?$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local repo_path="${BASH_REMATCH[2]}"
+        repo_path="${repo_path%.git}"
+        selected="$host/$repo_path"
+        REMOTE_PROTOCOLS["$host"]="ssh"
+    fi
+    
+    clone_and_create_session "$selected"
+}
+
+# Show help
+show_help() {
+    cat << EOF
+tmux-git-cloner - Clone git repositories from configured remotes
+
+Usage: tmux-git-cloner [OPTIONS]
+
+Options:
+    -h, --help      Show this help message
+    -l, --list      List all available repositories without cloning
+
+Prerequisites:
+    - gh CLI for GitHub (https://cli.github.com/)
+    - tea CLI for Gitea (https://gitea.com/gitea/tea)
+    
+    Authenticate before use:
+      GitHub: gh auth login
+      Gitea:  tea login add
+
+Configuration:
+    Config file: $CONFIG_FILE
+    
+    The config file allows you to configure:
+    - CLONE_DIR: Directory where repositories will be cloned
+    - REMOTES: List of remotes to query (format: type:host:protocol)
+
+Examples:
+    tmux-git-cloner              # Interactive repository selection
+    tmux-git-cloner --list       # List all repositories
+
+EOF
+}
+
+# Parse command line arguments
+case "${1:-}" in
+    -h|--help)
+        show_help
+        exit 0
+        ;;
+    -l|--list)
+        load_config
+        check_dependencies
+        fetch_all_repos
+        printf '%s\n' "${ALL_REPOS[@]}" | sort -u
+        exit 0
+        ;;
+    "")
+        main
+        ;;
+    *)
+        echo "Error: Unknown option: $1" >&2
+        show_help
+        exit 1
+        ;;
+esac
