@@ -124,10 +124,12 @@ fetch_gitea_repos() {
 
 # Fetch all repositories from all configured remotes
 # Stores protocol info in REMOTE_PROTOCOLS associative array
+# Stores repos in ALL_REPOS array (global, to avoid subshell issues with REMOTE_PROTOCOLS)
 declare -A REMOTE_PROTOCOLS
+declare -a ALL_REPOS
 
 fetch_all_repos() {
-    local all_repos=()
+    ALL_REPOS=()
     
     for remote in $REMOTES; do
         local type host protocol
@@ -152,18 +154,16 @@ fetch_all_repos() {
         case "$type" in
             github)
                 while IFS= read -r repo; do
-                    [[ -n "$repo" ]] && all_repos+=("$repo")
+                    [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
                 done < <(fetch_github_repos "$host")
                 ;;
             gitea)
                 while IFS= read -r repo; do
-                    [[ -n "$repo" ]] && all_repos+=("$repo")
+                    [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
                 done < <(fetch_gitea_repos "$host")
                 ;;
         esac
     done
-    
-    printf '%s\n' "${all_repos[@]}" | sort -u
 }
 
 # Generate clone URL for a repository
@@ -231,9 +231,12 @@ main() {
     load_config
     check_dependencies
     
-    # Fetch all repos
+    # Fetch all repos (populates ALL_REPOS array and REMOTE_PROTOCOLS)
+    fetch_all_repos
+    
+    # Convert array to newline-separated string for fzf, sorted
     local repos
-    repos=$(fetch_all_repos)
+    repos=$(printf '%s\n' "${ALL_REPOS[@]}" | sort -u)
     
     # Use fzf to select a repository (--print-query allows entering custom URLs)
     local selected
@@ -304,6 +307,7 @@ case "${1:-}" in
         load_config
         check_dependencies
         fetch_all_repos
+        printf '%s\n' "${ALL_REPOS[@]}" | sort -u
         exit 0
         ;;
     "")
