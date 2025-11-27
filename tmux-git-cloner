@@ -258,7 +258,7 @@ main() {
     
     # Use fzf to select a repository (--print-query allows entering custom URLs)
     local selected
-    selected=$(echo "$repos" | fzf --tmux=center,100% --prompt="Select repository (or paste URL): " --print-query | tail -1)
+    selected=$(echo "$repos" | fzf --tmux=center,100% --prompt="Select repo to clone: " --print-query | tail -1)
     
     if [[ -z "$selected" ]]; then
         exit 0
