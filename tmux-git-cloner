@@ -148,6 +148,7 @@ declare -A REMOTE_PROTOCOLS
 # Also writes protocol info to a temp file for later use
 stream_all_repos() {
     local protocol_file="$1"
+    local -A written_hosts  # Track which hosts we've already written
     
     for remote in $REMOTES; do
         local type host protocol
@@ -166,8 +167,11 @@ stream_all_repos() {
             continue
         fi
         
-        # Write protocol to temp file for later use
-        echo "$host=$protocol" >> "$protocol_file"
+        # Write protocol to temp file for later use (only once per host)
+        if [[ -z "${written_hosts[$host]}" ]]; then
+            printf '%s\t%s\n' "$host" "$protocol" >> "$protocol_file"
+            written_hosts["$host"]=1
+        fi
         
         case "$type" in
             github)
@@ -184,7 +188,7 @@ stream_all_repos() {
 load_protocols_from_file() {
     local protocol_file="$1"
     if [[ -f "$protocol_file" ]]; then
-        while IFS='=' read -r host protocol; do
+        while IFS=$'\t' read -r host protocol; do
             [[ -n "$host" ]] && REMOTE_PROTOCOLS["$host"]="$protocol"
         done < "$protocol_file"
     fi
