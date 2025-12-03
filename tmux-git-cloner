@@ -266,8 +266,8 @@ clone_and_create_session() {
     # Create target directory path: CLONE_DIR/host/owner/repo
     target_dir="$CLONE_DIR/$repo_path"
     
-    # Session name: path relative to home, with leading slash removed and periods replaced with underscores
-    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g")
+    # Session name: path relative to home, with leading slash removed, periods and colons replaced with underscores
+    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g; s@:@_@g")
     
     # Check if directory already exists
     if [[ -d "$target_dir" ]]; then
