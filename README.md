@@ -1,5 +1,9 @@
 # tmux-git-cloner
 
+> [!NOTE]
+> Development of this tool has moved to a local gitea instance: [https://gitea.lightjack.de/LightJack05](https://gitea.lightjack.de/LightJack05)
+
+
 A tool that allows you to clone git repositories from multiple remotes (GitHub, Gitea) using fzf for interactive selection within tmux.
 
 > [!CAUTION]
