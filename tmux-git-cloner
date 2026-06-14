@@ -133,7 +133,7 @@ fetch_gitea_repos() {
     fi
     
     # Fetch repos using tea CLI
-    tea repos list --login "$host" --output simple 2>/dev/null | cut -d ' ' -f1-2 | tr ' ' '/' | \
+    tea repos list --limit 100000 --login "$host" --output simple 2>/dev/null | cut -d ' ' -f1-2 | tr ' ' '/' | \
         while IFS= read -r repo; do
             # tea outputs "owner/repo" format
             [[ -n "$repo" ]] && echo "$host/$repo"
