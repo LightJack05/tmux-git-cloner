@@ -143,6 +143,9 @@ fetch_gitea_repos() {
 # Associative array to store protocol info
 declare -A REMOTE_PROTOCOLS
 
+# Associative array to map sanitized host to original host (for URLs with ports)
+declare -A ORIGINAL_HOSTS
+
 # Stream repositories from all configured remotes directly to stdout
 # This allows piping directly to fzf for immediate display
 # Also writes protocol info to a temp file for later use
@@ -238,16 +241,18 @@ fetch_all_repos() {
 # Generate clone URL for a repository
 get_clone_url() {
     local repo_path="$1"
-    local host owner_repo protocol
+    local host owner_repo protocol original_host
     
     host=$(echo "$repo_path" | cut -d'/' -f1)
     owner_repo=$(echo "$repo_path" | cut -d'/' -f2-)
     protocol="${REMOTE_PROTOCOLS[$host]:-ssh}"
+    # Get original host (with port) if it exists, otherwise use the host as-is
+    original_host="${ORIGINAL_HOSTS[$host]:-$host}"
     
     if [[ "$protocol" == "ssh" ]]; then
-        echo "git@${host}:${owner_repo}.git"
+        echo "git@${original_host}:${owner_repo}.git"
     else
-        echo "https://${host}/${owner_repo}.git"
+        echo "${protocol}://${original_host}/${owner_repo}.git"
     fi
 }
 
@@ -261,8 +266,8 @@ clone_and_create_session() {
     # Create target directory path: CLONE_DIR/host/owner/repo
     target_dir="$CLONE_DIR/$repo_path"
     
-    # Session name: path relative to home, with leading slash removed and periods replaced with underscores
-    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g")
+    # Session name: path relative to home, with leading slash removed, periods and colons replaced with underscores
+    session_name=$(echo "$target_dir" | sed "s@$HOME@@g; s@^\/@@g; s@\.@_@g; s@:@_@g")
     
     # Check if directory already exists
     if [[ -d "$target_dir" ]]; then
@@ -319,13 +324,24 @@ main() {
     # Load protocol info from temp file
     load_protocols_from_file "$protocol_file"
     
-    # Handle full URLs (https:// or git@)
-    if [[ "$selected" =~ ^https://([^/]+)/(.+)(\.git)?$ ]]; then
+    # Handle full URLs (http://, https://, or git@)
+    if [[ "$selected" =~ ^https?://([^/]+)/(.+)(\.git)?$ ]]; then
         local host="${BASH_REMATCH[1]}"
         local repo_path="${BASH_REMATCH[2]}"
         repo_path="${repo_path%.git}"
-        selected="$host/$repo_path"
-        REMOTE_PROTOCOLS["$host"]="https"
+        # Determine protocol (http or https)
+        local protocol="https"
+        if [[ "$selected" =~ ^http:// ]]; then
+            protocol="http"
+        fi
+        # Sanitize host for directory paths (replace : with _ for ports)
+        local sanitized_host="${host//:/_}"
+        # Store original host if it differs (has a port)
+        if [[ "$sanitized_host" != "$host" ]]; then
+            ORIGINAL_HOSTS["$sanitized_host"]="$host"
+        fi
+        selected="$sanitized_host/$repo_path"
+        REMOTE_PROTOCOLS["$sanitized_host"]="$protocol"
     elif [[ "$selected" =~ ^git@([^:]+):(.+)(\.git)?$ ]]; then
         local host="${BASH_REMATCH[1]}"
         local repo_path="${BASH_REMATCH[2]}"
