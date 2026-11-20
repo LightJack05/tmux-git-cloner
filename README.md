@@ -1,6 +1,6 @@
 # tmux-git-cloner
 
-A tool that allows you to clone git repositories from multiple remotes (GitHub, Gitea) using fzf for interactive selection within tmux.
+A tool that allows you to clone git repositories from multiple remotes (GitHub, Gitea, GitLab) using fzf for interactive selection within tmux.
 
 > [!CAUTION]
 > THIS TOOL IS AI GENERATED
@@ -9,9 +9,10 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 
 ## Features
 
-- **Multiple Remote Support**: Configure multiple GitHub and Gitea instances
+- **Multiple Remote Support**: Configure multiple GitHub, Gitea and GitLab instances
 - **GitHub Organization Support**: Automatically lists repositories from GitHub organizations you are a member of
-- **CLI-Based Authentication**: Uses `gh` (GitHub CLI) and `tea` (Gitea CLI) for authentication - no separate token management required
+- **GitLab Group Support**: Lists every GitLab project you are a member of, including those in groups and subgroups
+- **CLI-Based Authentication**: Uses `gh` (GitHub CLI), `tea` (Gitea CLI) and `glab` (GitLab CLI) for authentication - no separate token management required
 - **SSH and HTTPS Cloning**: Choose your preferred clone protocol per remote
 - **Interactive Selection**: Use fzf with tmux integration to browse and select repositories
 - **Tmux Session Management**: Automatically creates a new tmux session for the clone process
@@ -30,6 +31,7 @@ A tool that allows you to clone git repositories from multiple remotes (GitHub, 
 
 - `gh` - GitHub CLI (for GitHub and GitHub Enterprise)
 - `tea` - Gitea CLI (for Gitea instances)
+- `glab` - GitLab CLI (for GitLab.com and self-managed GitLab)
 
 ### Installation on common systems
 
@@ -43,17 +45,19 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githu
 sudo apt update && sudo apt install gh
 
 # Gitea CLI (tea) - download from https://gitea.com/gitea/tea/releases
+
+# GitLab CLI (glab) - download from https://gitlab.com/gitlab-org/cli/-/releases
 ```
 
 **Arch Linux:**
 ```bash
-sudo pacman -S tmux fzf git github-cli
+sudo pacman -S tmux fzf git github-cli glab
 # tea available from AUR
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install tmux fzf git gh tea
+brew install tmux fzf git gh tea glab
 ```
 
 ## Installation
@@ -64,7 +68,7 @@ brew install tmux fzf git gh tea
 
 ## Authentication
 
-This tool uses the authentication from `gh` and `tea` CLIs, so you don't need to manage tokens separately.
+This tool uses the authentication from the `gh`, `tea` and `glab` CLIs, so you don't need to manage tokens separately.
 
 ### GitHub Authentication
 
@@ -81,6 +85,16 @@ gh auth login --hostname github.mycompany.com
 ```bash
 # Add a Gitea login
 tea login add --name myserver --url https://gitea.example.com --token YOUR_TOKEN
+```
+
+### GitLab Authentication
+
+```bash
+# For gitlab.com
+glab auth login
+
+# For a self-managed instance
+glab auth login --hostname gitlab.mycompany.com
 ```
 
 ## Configuration
@@ -102,6 +116,7 @@ CLONE_DIR="${HOME}/repos"
 
 # List of remotes to query (space-separated)
 # Format: type:host:protocol
+# Type can be 'github', 'gitea' or 'gitlab'
 # Protocol can be 'ssh' or 'https'
 REMOTES="github:github.com:https"
 ```
@@ -117,7 +132,7 @@ REMOTES="github:github.com:https"
 **Multiple remotes with different protocols:**
 ```bash
 CLONE_DIR="${HOME}/code"
-REMOTES="github:github.com:https github:github.company.com:https gitea:git.mydomain.com:ssh"
+REMOTES="github:github.com:https github:github.company.com:https gitea:git.mydomain.com:ssh gitlab:gitlab.com:ssh"
 ```
 
 ## Usage
@@ -129,7 +144,7 @@ tmux-git-cloner
 ```
 
 This will:
-1. Fetch repositories from all configured remotes using `gh` and `tea` CLIs
+1. Fetch repositories from all configured remotes using the `gh`, `tea` and `glab` CLIs
 2. Present an fzf selection interface (in tmux popup if available)
 3. On selection, clone the repository to `CLONE_DIR/host/owner/repo`
 4. Create a new tmux session named after the repo and attach to it
@@ -163,9 +178,13 @@ $CLONE_DIR/
 ├── gitea.example.com/
 │   └── username/
 │       └── repo4/
+├── gitlab.com/
+│   └── group/
+│       └── subgroup/
+│           └── repo5/
 └── github.company.com/
     └── org/
-        └── repo5/
+        └── repo6/
 ```
 
 ## Tmux Integration
@@ -207,6 +226,7 @@ alias tgc='tmux-git-cloner'
 - Check that you're authenticated to your remotes:
   - GitHub: `gh auth status`
   - Gitea: `tea login list`
+  - GitLab: `glab auth status --all`
 - Verify your REMOTES configuration matches the authenticated hosts
 
 ### Authentication errors
@@ -230,6 +250,18 @@ tea login list
 
 # Add new login
 tea login add --url https://gitea.example.com
+```
+
+**GitLab:**
+```bash
+# Check status of all configured instances
+glab auth status --all
+
+# Re-authenticate
+glab auth login
+
+# For a self-managed instance
+glab auth login --hostname gitlab.company.com
 ```
 
 ### SSH clone failures

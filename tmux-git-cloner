@@ -4,7 +4,8 @@ set -o pipefail
 # tmux-git-cloner: Clone git repositories from configured remotes
 # using fzf for selection and tmux for the clone process
 #
-# Uses gh CLI for GitHub and tea CLI for Gitea - no separate credential management needed
+# Uses gh CLI for GitHub, tea CLI for Gitea and glab CLI for GitLab
+# - no separate credential management needed
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-git-cloner"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -30,12 +31,14 @@ check_dependencies() {
     # Check for CLI tools based on configured remotes
     local needs_gh=false
     local needs_tea=false
+    local needs_glab=false
     
     for remote in $REMOTES; do
         local type="${remote%%:*}"
         case "$type" in
             github) needs_gh=true ;;
             gitea) needs_tea=true ;;
+            gitlab) needs_glab=true ;;
         esac
     done
     
@@ -46,6 +49,11 @@ check_dependencies() {
     
     if [[ "$needs_tea" == true ]] && ! command -v tea &> /dev/null; then
         echo "Error: 'tea' (Gitea CLI) is required for configured Gitea remotes." >&2
+        exit 1
+    fi
+    
+    if [[ "$needs_glab" == true ]] && ! command -v glab &> /dev/null; then
+        echo "Error: 'glab' (GitLab CLI) is required for configured GitLab remotes." >&2
         exit 1
     fi
 }
@@ -140,6 +148,49 @@ fetch_gitea_repos() {
         done
 }
 
+# Maximum number of pages requested per GitLab host.
+# The GitLab API caps per_page at 100, so glab has to be paged manually.
+GITLAB_PER_PAGE=100
+GITLAB_MAX_PAGES=100
+
+# Fetch repositories from GitLab using glab CLI
+# Lists every project the user is a member of, which includes projects owned
+# through group (and subgroup) membership.
+fetch_gitlab_repos() {
+    local host="$1"
+    
+    # Check if a login exists for this host
+    if ! glab auth status --hostname "$host" &> /dev/null; then
+        return
+    fi
+    
+    # glab repo list has no --hostname flag, so the host is selected via GITLAB_HOST
+    local page=1 output count
+    while [[ $page -le $GITLAB_MAX_PAGES ]]; do
+        # On failure glab prints a JSON error object on stdout, so only emit
+        # the output of a successful request
+        if ! output=$(GITLAB_HOST="$host" glab repo list --member \
+            --per-page "$GITLAB_PER_PAGE" --page "$page" \
+            --output json --jq '.[].path_with_namespace' 2>/dev/null); then
+            return
+        fi
+        
+        [[ -z "$output" ]] && return
+        
+        count=0
+        while IFS= read -r repo; do
+            # glab outputs "group/repo" or "group/subgroup/repo" format
+            [[ -z "$repo" ]] && continue
+            echo "$host/$repo"
+            ((count++))
+        done <<< "$output"
+        
+        # A short page means there is nothing left to fetch
+        [[ $count -lt $GITLAB_PER_PAGE ]] && return
+        ((page++))
+    done
+}
+
 # Associative array to store protocol info
 declare -A REMOTE_PROTOCOLS
 
@@ -179,6 +230,9 @@ stream_all_repos() {
                 ;;
             gitea)
                 fetch_gitea_repos "$host"
+                ;;
+            gitlab)
+                fetch_gitlab_repos "$host"
                 ;;
         esac
     done
@@ -230,6 +284,11 @@ fetch_all_repos() {
                 while IFS= read -r repo; do
                     [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
                 done < <(fetch_gitea_repos "$host")
+                ;;
+            gitlab)
+                while IFS= read -r repo; do
+                    [[ -n "$repo" ]] && ALL_REPOS+=("$repo")
+                done < <(fetch_gitlab_repos "$host")
                 ;;
         esac
     done
@@ -351,10 +410,12 @@ Options:
 Prerequisites:
     - gh CLI for GitHub (https://cli.github.com/)
     - tea CLI for Gitea (https://gitea.com/gitea/tea)
+    - glab CLI for GitLab (https://gitlab.com/gitlab-org/cli)
     
     Authenticate before use:
       GitHub: gh auth login
       Gitea:  tea login add
+      GitLab: glab auth login
 
 Configuration:
     Config file: $CONFIG_FILE

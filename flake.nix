@@ -40,6 +40,7 @@
                 git
                 gh
                 tea
+                glab
                 gawk
                 gnugrep
                 gnused
